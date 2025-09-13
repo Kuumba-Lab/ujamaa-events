@@ -13,7 +13,7 @@
     <RepositoryUrl>https://github.com/Kuumba-Lab/ujamaa-events</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/Kuumba-Lab/ujamaa-events</PackageProjectUrl>
-    <PackageIcon>icon.png</PackageIcon>
+    <PackageIcon>icon.jpeg</PackageIcon>
   </PropertyGroup>
 
   <ItemGroup>
