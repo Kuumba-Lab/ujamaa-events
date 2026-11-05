@@ -71,12 +71,13 @@ jobs:
           dotnet pack src/UjamaaEvents.csproj -c Release --no-build -o artifacts
 
       - name: Login no NuGet (trusted publishing / OIDC)
+        id: login
         uses: NuGet/login@v1
         with:
           user: walisoncecilio
 
       - name: Publish no NuGet
-        run: dotnet nuget push "artifacts/Ujamaa.Events.${{ steps.version.outputs.new_version }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "artifacts/Ujamaa.Events.${{ steps.version.outputs.new_version }}.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Commit bump + tag
         run: |
