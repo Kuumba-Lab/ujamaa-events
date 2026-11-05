@@ -1,3 +1,4 @@
+# Publica Ujamaa.Events no nuget.org: bump por conventional commits + trusted publishing OIDC
 name: Publish Ujamaa.Events
 
 on:
