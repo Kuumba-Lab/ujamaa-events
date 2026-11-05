@@ -1,0 +1,78 @@
+name: Publish Ujamaa.Events
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Tipo de incremento (auto usa conventional commits)"
+        required: false
+        default: "auto"
+        type: choice
+        options: [auto, major, minor, patch]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Calcula nova versao (conventional commits desde a ultima tag)
+        id: version
+        env:
+          MANUAL_BUMP: ${{ inputs.bump }}
+        run: |
+          CSPROJ="src/UjamaaEvents.csproj"
+          CURRENT=$(grep -oP '(?<=<Version>)[^<]+' "$CSPROJ")
+          LAST_TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)
+
+          if [ -n "$LAST_TAG" ]; then RANGE="$LAST_TAG..HEAD"; else RANGE="HEAD"; fi
+
+          if [ "$MANUAL_BUMP" != "auto" ] && [ -n "$MANUAL_BUMP" ]; then
+            BUMP="$MANUAL_BUMP"
+          elif git log "$RANGE" --format=%s | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING[ -]CHANGE"; then
+            BUMP=major
+          elif git log "$RANGE" --format=%s | grep -qiE "^feat(\(.+\))?:"; then
+            BUMP=minor
+          else
+            BUMP=patch
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0;;
+            minor) MINOR=$((MINOR+1)); PATCH=0;;
+            patch) PATCH=$((PATCH+1));;
+          esac
+          NEW="$MAJOR.$MINOR.$PATCH"
+
+          echo "Versao atual: $CURRENT | ultima tag: ${LAST_TAG:-nenhuma} | bump: $BUMP -> $NEW"
+          sed -i "s|<Version>$CURRENT</Version>|<Version>$NEW</Version>|" "$CSPROJ"
+          echo "new_version=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        run: dotnet pack src/UjamaaEvents.csproj -c Release -o artifacts
+
+      - name: Publish no NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.UJAMAA_EVENTS_LIB_KEY }}
+        run: dotnet nuget push "artifacts/Ujamaa.Events.${{ steps.version.outputs.new_version }}.nupkg" --api-key "$NUGET_API_KEY" --source nuget.org --skip-duplicate
+
+      - name: Commit bump + tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/UjamaaEvents.csproj
+          git commit -m "chore(release): v${{ steps.version.outputs.new_version }} [skip ci]"
+          git tag "v${{ steps.version.outputs.new_version }}"
+          git push origin main --follow-tags
