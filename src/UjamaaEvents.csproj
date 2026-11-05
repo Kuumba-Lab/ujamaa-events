@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Ujamaa.Events</PackageId>
-    <Version>1.6.0</Version>
+    <Version>1.7.0</Version>
     <Authors>Walison Cecílio</Authors>
     <Description>Uma biblioteca .NET desenvolvida para abstrair e facilitar a comunicação com serviços de mensageria e filas de eventos.</Description>
     <PackageTags>csharp;library;ujamaa;kummbalab;ujamaaevents;queue;messaging;filas;mensageria;amqp;RabbitMQ</PackageTags>
