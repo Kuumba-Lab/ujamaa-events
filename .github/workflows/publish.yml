@@ -61,7 +61,9 @@ jobs:
           echo "new_version=$NEW" >> "$GITHUB_OUTPUT"
 
       - name: Pack
-        run: dotnet pack src/UjamaaEvents.csproj -c Release -o artifacts
+        run: |
+          dotnet build src/UjamaaEvents.csproj -c Release
+          dotnet pack src/UjamaaEvents.csproj -c Release --no-build -o artifacts
 
       - name: Publish no NuGet
         env:
