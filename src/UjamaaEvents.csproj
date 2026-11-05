@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>Ujamaa.Events</PackageId>
+    <Version>1.6.0</Version>
+    <Authors>Walison Cecílio</Authors>
+    <Description>Uma biblioteca .NET desenvolvida para abstrair e facilitar a comunicação com serviços de mensageria e filas de eventos.</Description>
+    <PackageTags>csharp;library;ujamaa;kummbalab;ujamaaevents;queue;messaging;filas;mensageria;amqp;RabbitMQ</PackageTags>
+    <RepositoryUrl>https://github.com/Kuumba-Lab/ujamaa-events</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Kuumba-Lab/ujamaa-events</PackageProjectUrl>
+    <PackageIcon>icon.jpeg</PackageIcon>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="\" />
+    <None Include="../icon.jpeg" Pack="true" PackagePath="\" />
+    <None Include="$(OutputPath)\$(AssemblyName).xml" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.9" />
+    <PackageReference Include="RabbitMQ.Client" Version="7.1.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="6.0.16" />
+  </ItemGroup>
+
+</Project>
