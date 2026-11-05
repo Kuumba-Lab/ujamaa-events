@@ -18,6 +18,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,10 +69,13 @@ jobs:
           dotnet build src/UjamaaEvents.csproj -c Release
           dotnet pack src/UjamaaEvents.csproj -c Release --no-build -o artifacts
 
+      - name: Login no NuGet (trusted publishing / OIDC)
+        uses: NuGet/login@v1
+        with:
+          user: walisoncecilio
+
       - name: Publish no NuGet
-        env:
-          NUGET_API_KEY: ${{ secrets.UJAMAA_EVENTS_LIB_KEY }}
-        run: dotnet nuget push "artifacts/Ujamaa.Events.${{ steps.version.outputs.new_version }}.nupkg" --api-key "$NUGET_API_KEY" --source nuget.org --skip-duplicate
+        run: dotnet nuget push "artifacts/Ujamaa.Events.${{ steps.version.outputs.new_version }}.nupkg" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Commit bump + tag
         run: |
