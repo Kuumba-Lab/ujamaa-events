@@ -5,16 +5,25 @@ using System.Text.Json;
 using System.Text.Unicode;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using Ujamaa.Events.Interfaces;
 using Ujamaa.Events.Models;
 
 namespace Ujamaa.Events.Services
 {
     /// <inheritdoc/>
-    public class RabbitMQService : IEventService
+    public class RabbitMQService : IEventService, IAsyncDisposable
     {
+        private const ushort PrefetchCount = 30;
+
         private static readonly ActivitySource ActivitySource = new("Ujamaa.Events.RabbitMQ", "1.0.0");
         private readonly ConnectionFactory _factory;
+        private readonly SemaphoreSlim _connectionLock = new(1, 1);
+        private readonly SemaphoreSlim _publishLock = new(1, 1);
+        private readonly HashSet<string> _declaredQueues = new();
+        private readonly HashSet<string> _declaredExchanges = new();
+        private IConnection? _connection;
+        private IChannel? _publishChannel;
 
         /// <summary>
         /// Inicializa uma nova instância do RabbitMQService.
@@ -32,6 +41,8 @@ namespace Ujamaa.Events.Services
                 Password = amqp.Password,
                 VirtualHost = amqp.VirtualHost,
                 ClientProvidedName = amqp.ClientProvidedName,
+                AutomaticRecoveryEnabled = true,
+                TopologyRecoveryEnabled = true,
             };
         }
 
@@ -39,6 +50,8 @@ namespace Ujamaa.Events.Services
         public async Task Consumer(string queue, IEventConsumer eventConsumer)
         {
             IChannel channel = await GetChannel();
+
+            await channel.BasicQosAsync(prefetchSize: 0, prefetchCount: PrefetchCount, global: false);
 
             AsyncEventingBasicConsumer consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += async (model, ea) =>
@@ -60,7 +73,7 @@ namespace Ujamaa.Events.Services
                 catch (Exception ex)
                 {
                     activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                    throw;
+                    await NackSafely(channel, ea);
                 }
             };
 
@@ -77,8 +90,6 @@ namespace Ujamaa.Events.Services
             using Activity? activity = ActivitySource.StartActivity("RabbitMQ.Publish", ActivityKind.Producer);
             activity?.SetTag("messaging.system", "rabbitmq");
             activity?.SetTag("messaging.destination.name", queue ?? exchange);
-
-            IChannel channel = await GetChannel();
 
             if (!string.IsNullOrEmpty(queue))
             {
@@ -99,38 +110,93 @@ namespace Ujamaa.Events.Services
                 Headers = BuildTraceHeaders(),
             };
 
-            await channel.BasicPublishAsync(
-                exchange: exchange,
-                routingKey: queue,
-                mandatory: false,
-                basicProperties: properties,
-                body: body
-            );
+            await _publishLock.WaitAsync();
+            try
+            {
+                IChannel channel = await GetPublishChannel();
+
+                await channel.BasicPublishAsync(
+                    exchange: exchange,
+                    routingKey: queue ?? string.Empty,
+                    mandatory: false,
+                    basicProperties: properties,
+                    body: body
+                );
+            }
+            finally
+            {
+                _publishLock.Release();
+            }
         }
 
         /// <inheritdoc/>
         public async Task CreateQueue(string queue)
         {
-            IChannel channel = await GetChannel();
+            if (!_declaredQueues.Add(queue))
+            {
+                return;
+            }
 
-            await channel.QueueDeclareAsync(
-                queue: queue,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null
-            );
+            string deadLetterExchange = $"{queue}.dlx";
+            string deadLetterQueue = $"{queue}.dlq";
+
+            try
+            {
+                IChannel channel = await GetChannel();
+                await DeclareDeadLetterTopology(channel, deadLetterExchange, deadLetterQueue);
+
+                await channel.QueueDeclareAsync(
+                    queue: queue,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: new Dictionary<string, object?>
+                    {
+                        ["x-dead-letter-exchange"] = deadLetterExchange
+                    }
+                );
+            }
+            catch (OperationInterruptedException)
+            {
+                // Fila já existente sem dead-letter: mantém compatível em vez de derrubar o boot.
+                IChannel fallback = await GetChannel();
+                await fallback.QueueDeclareAsync(
+                    queue: queue,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null
+                );
+            }
+            catch
+            {
+                _declaredQueues.Remove(queue);
+                throw;
+            }
         }
 
         /// <inheritdoc/>
         public async Task CreateExchange(string exchange, string type = ExchangeType.Fanout)
         {
-            IChannel channel = await GetChannel();
+            if (!_declaredExchanges.Add($"{exchange}:{type}"))
+            {
+                return;
+            }
 
-            await channel.ExchangeDeclareAsync(
-                exchange: exchange,
-                type: type
-            );
+            try
+            {
+                IChannel channel = await GetChannel();
+
+                await channel.ExchangeDeclareAsync(
+                    exchange: exchange,
+                    type: type
+                );
+            }
+            catch
+            {
+                _declaredExchanges.Remove($"{exchange}:{type}");
+                throw;
+            }
         }
 
         /// <inheritdoc/>
@@ -145,11 +211,107 @@ namespace Ujamaa.Events.Services
             );
         }
 
+        /// <inheritdoc/>
+        public async ValueTask DisposeAsync()
+        {
+            if (_publishChannel != null)
+            {
+                await _publishChannel.DisposeAsync();
+            }
+
+            if (_connection != null)
+            {
+                await _connection.DisposeAsync();
+            }
+
+            _connectionLock.Dispose();
+            _publishLock.Dispose();
+        }
+
+        private static async Task DeclareDeadLetterTopology(IChannel channel, string deadLetterExchange, string deadLetterQueue)
+        {
+            await channel.ExchangeDeclareAsync(
+                exchange: deadLetterExchange,
+                type: ExchangeType.Fanout
+            );
+
+            await channel.QueueDeclareAsync(
+                queue: deadLetterQueue,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null
+            );
+
+            await channel.QueueBindAsync(
+                queue: deadLetterQueue,
+                exchange: deadLetterExchange,
+                routingKey: string.Empty
+            );
+        }
+
+        private static async Task NackSafely(IChannel channel, BasicDeliverEventArgs ea)
+        {
+            try
+            {
+                // Primeira falha: requeue pra tentar de novo. Já redelivered: dead-letter (DLQ).
+                await channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: !ea.Redelivered);
+            }
+            catch
+            {
+                // Canal morto: a mensagem volta pra fila quando a conexão se recuperar.
+            }
+        }
+
+        private async Task<IConnection> GetConnection()
+        {
+            if (_connection is { IsOpen: true })
+            {
+                return _connection;
+            }
+
+            await _connectionLock.WaitAsync();
+            try
+            {
+                if (_connection is { IsOpen: true })
+                {
+                    return _connection;
+                }
+
+                if (_connection != null)
+                {
+                    await _connection.DisposeAsync();
+                }
+
+                _connection = await _factory.CreateConnectionAsync();
+                return _connection;
+            }
+            finally
+            {
+                _connectionLock.Release();
+            }
+        }
+
         private async Task<IChannel> GetChannel()
         {
-            IConnection connection = await _factory.CreateConnectionAsync();
-            IChannel channel = await connection.CreateChannelAsync();
-            return channel;
+            IConnection connection = await GetConnection();
+            return await connection.CreateChannelAsync();
+        }
+
+        private async Task<IChannel> GetPublishChannel()
+        {
+            if (_publishChannel is { IsOpen: true })
+            {
+                return _publishChannel;
+            }
+
+            if (_publishChannel != null)
+            {
+                await _publishChannel.DisposeAsync();
+            }
+
+            _publishChannel = await GetChannel();
+            return _publishChannel;
         }
 
         private string SerializeObject<T>(T data) where T : class
